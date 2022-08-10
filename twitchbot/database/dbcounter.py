@@ -1,12 +1,13 @@
 from sqlalchemy import Integer
 from typing import Union, Optional, List
+import random
 
-from .session import session
+from .session import session, get_database_random_row
 from .models import DBCounter
 
 __all__ = ('counter_exist', 'get_all_counters', 'add_counter', 'increment_counter', 'increment_or_add_counter',
            'set_counter', 'delete_counter_by_id', 'delete_counter_by_alias',
-           'get_counter_by_id', 'get_counter_by_alias', 'get_counter')
+           'get_counter_by_id', 'get_counter_by_alias', 'get_counter', 'get_random_counter')
 
 
 def counter_exist(channel: str, id: int = None, alias: str = None) -> bool:
@@ -117,3 +118,6 @@ def get_all_counters(channel: str) -> List[DBCounter]:
     retrieve all counters from the current channel
     """
     return session.query(DBCounter).filter(DBCounter.channel == channel).all()
+
+def get_random_counter(channel: str) -> str:
+    return str(get_database_random_row(DBCounter))

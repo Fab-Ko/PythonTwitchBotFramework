@@ -1,11 +1,14 @@
 import os
+import random
+from sqlalchemy import Column, Integer, String, Float, Boolean, Table
 
 from sqlalchemy import create_engine, orm
+from sqlalchemy.orm import Query
 from sqlalchemy.ext.declarative import declarative_base
 from ..config import database_cfg
 from ..util import is_env_key
 
-__all__ = ('Base', 'engine', 'get_database_session', 'DB_FILENAME', 'init_tables', 'session')
+__all__ = ('Base', 'engine', 'get_database_session', 'DB_FILENAME', 'init_tables', 'session', 'get_database_random_row')
 
 
 def _get_database_env_value(value: str):
@@ -56,3 +59,11 @@ def get_database_session():
 
 def init_tables():
     Base.metadata.create_all(engine)
+
+
+def get_database_random_row(table: Table):
+    #General Randomfunction from https://newbedev.com/getting-random-row-through-sqlalchemy
+    query: Query = session.query(table)
+    rowCount = int(query.count())
+    randomRow = query.offset(int(rowCount*random.random())).first()
+    return randomRow

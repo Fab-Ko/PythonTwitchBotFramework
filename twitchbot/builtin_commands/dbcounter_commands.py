@@ -13,7 +13,8 @@ from twitchbot import (
     set_counter,
     get_all_counters,
     translate,
-    counter_exist
+    counter_exist,
+    get_random_counter
 )
 
 PREFIX = cfg.prefix
@@ -82,3 +83,7 @@ async def cmd_set_counter(msg: Message, *args):
 async def cmd_list_counters(msg: Message, *args):
     clist = ', '.join(translate('listcounters_format', id=x.id, alias=x.alias, value=x.value) for x in get_all_counters(msg.channel_name))
     await msg.reply(translate('listcounters_list', clist=clist))
+
+@Command('randomcounter', permission='manage_counter', help='list all counters of the channel')
+async def cmd_list_countersrand(msg: Message, *args):
+    await msg.reply(get_random_counter(msg.channel_name))
