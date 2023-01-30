@@ -1,34 +1,58 @@
 import os
-import typing
+from dataclasses import dataclass
 from datetime import datetime
 from importlib import import_module
-from typing import Dict, Callable, Optional, List, Tuple
+from typing import Dict, Callable, Optional, List, Tuple, Union, Sequence
+from inspect import getfullargspec
 
-from twitchbot.database import CustomCommand
-from twitchbot.message import Message
-from twitchbot.database.dbcounter import increment_or_add_counter
+from .database import CustomCommand
+from .message import Message
+from .database.dbcounter import increment_or_add_counter
 from .config import cfg
 from .enums import CommandContext
-from .util import get_py_files, get_file_name
-from .util import temp_syspath
-
-if typing.TYPE_CHECKING:
-    from .modloader import Mod
+from .exceptions import InvalidArgumentsError
+from .translations import translate
+from .util import (
+    get_py_files,
+    get_file_name,
+    convert_args_to_function_parameter_types,
+    temp_syspath,
+    AutoCastResult,
+    AutoCastError,
+    get_callable_arg_types,
+    Param,
+)
 
 DEFAULT_COOLDOWN_BYPASS = 'bypass_cooldown'
 DEFAULT_COOLDOWN = 0
 
 __all__ = (
-    'Command', 'commands', 'command_exist', 'load_commands_from_directory', 'DummyCommand', 'CustomCommandAction',
-    'ModCommand', 'SubCommand', 'get_command', 'CUSTOM_COMMAND_PLACEHOLDERS', 'command_last_execute',
-    'get_time_since_execute', 'reset_command_last_execute', 'is_command_off_cooldown', 'is_command_on_cooldown',
-    'update_command_last_execute', 'set_command_permission')
+    'Command',
+    'commands',
+    'command_exist',
+    'load_commands_from_directory',
+    'DummyCommand',
+    'CustomCommandAction',
+    'ModCommand',
+    'SubCommand',
+    'get_command',
+    'CUSTOM_COMMAND_PLACEHOLDERS',
+    'command_last_execute',
+    'get_time_since_execute',
+    'reset_command_last_execute',
+    'is_command_off_cooldown',
+    'is_command_on_cooldown',
+    'update_command_last_execute',
+    'set_command_permission',
+    'get_command_chain_from_args',
+    'CommandChainResult',
+)
 
 
 class Command:
     def __init__(self, name: str, prefix: str = None, func: Callable = None, global_command: bool = True,
                  context: CommandContext = CommandContext.DEFAULT_COMMAND_CONTEXT, permission: str = None, syntax: str = None,
-                 help: str = None, aliases: List[str] = None, cooldown: int = DEFAULT_COOLDOWN,
+                 help: Optional[Union[str, Callable[[], str]]] = None, aliases: List[str] = None, cooldown: int = DEFAULT_COOLDOWN,
                  cooldown_bypass: str = DEFAULT_COOLDOWN_BYPASS, hidden: bool = False, parent: 'Command' = None):
         """
         :param name: name of the command (without the prefix)
@@ -49,7 +73,7 @@ class Command:
         self.cooldown_bypass = cooldown_bypass
         self.cooldown: int = cooldown
         self.aliases: List[str] = aliases if aliases is not None else []
-        self.help: str = help
+        self._help: str = help
         self.syntax: str = syntax
         self.permission: str = permission
         self.context: CommandContext = context
@@ -59,6 +83,9 @@ class Command:
         self.sub_cmds: Dict[str, Command] = {}
         self.parent: Optional[Command] = None
         self.update_parent_command(parent)
+
+        if not self.syntax and self.func is not None:
+            self.syntax = self._generate_syntax_string()
 
         if global_command:
             commands[self.fullname] = self
@@ -78,6 +105,14 @@ class Command:
             if self.name in self.parent.sub_cmds:
                 del self.parent.sub_cmds[self.name]
             parent.sub_cmds[self.name] = self
+
+    @property
+    def help(self):
+        if isinstance(self._help, str):
+            return self._help
+        elif callable(self._help):
+            return self._help()
+        return None
 
     @property
     def fullname(self) -> str:
@@ -111,7 +146,7 @@ class Command:
 
     def get_sub_cmd(self, args) -> Tuple['Command', Tuple[str]]:
         """
-        returns the final command in a sub-command chain from the args passed to the this function
+        returns the final command in a sub-command chain from the args passed to this function, as well as the remaining args
 
         the sub-command chain is based off of the current command this function is called on
 
@@ -122,9 +157,69 @@ class Command:
 
         return self.sub_cmds[args[0].lower()].get_sub_cmd(args[1:])
 
+    def _check_casted_args_for_auto_cast_fails(self, casted_args):
+        from .exceptions import InvalidArgumentsError
+        for arg in casted_args:
+            if not isinstance(arg, AutoCastResult):
+                continue
+
+            # handle fails caused by custom _handle_auto_cast() functions on classes
+            if isinstance(arg.exception, AutoCastError):
+                if arg.reason is not None and arg.exception.send_reason_to_chat:
+                    raise InvalidArgumentsError(reason=arg.exception.reason)
+                else:
+                    print(f'==== AUTO CAST FAIL ====\nreason = {arg.exception.reason}\n========================')
+
+                return True
+
+            if arg.param.annotation in (int, float):
+                raise InvalidArgumentsError(reason=translate('auto_cast_fail_number', arg_value=arg.value, arg_param_name=arg.param.name))
+
+        return False
+
+    def _check_args_fulfill_required_positional_arguments(self, args, function):
+        spec = getfullargspec(function)
+        # always subtract 1 because of msg parameter all commands have
+        # additionally, subtract an additional 1 if it's a mod command (has self/cls as its first parameter)
+        if spec.args and spec.args[0].casefold() in ('self', 'cls'):
+            offset = 2
+        else:
+            offset = 1
+
+        required_count = len(spec.args) - len(spec.defaults or ()) - offset
+
+        if len(args) < required_count:
+            raise InvalidArgumentsError(
+                reason=translate('args_does_not_fulfill_required_position_args', required_count=required_count, args_len=len(args)),
+                cmd=self
+            )
+
+    def _process_command_args_for_func(self, func, args):
+        casted_args = convert_args_to_function_parameter_types(func, args)
+        if self._check_casted_args_for_auto_cast_fails(casted_args):
+            return
+        self._check_args_fulfill_required_positional_arguments(args, func)
+        return casted_args
+
+    def _generate_syntax_string(self):
+        if self.func is None:
+            return ''
+
+        args = get_callable_arg_types(self.func, skip_self=True)[1:]
+        syntax_parts = []
+        for arg in args:
+            if arg.type == Param.VARARGS:
+                syntax_parts.append(f'({arg.name}...)')
+            elif arg.has_default_value:
+                syntax_parts.append(f'({arg.name}: {arg.default})')
+            else:
+                syntax_parts.append(f'<{arg.name}>')
+
+        return ' '.join(syntax_parts)
+
     async def execute(self, msg: Message):
         func, args = self._get_cmd_func(msg.parts[1:])
-        await func(msg, *args)
+        await func(msg, *self._process_command_args_for_func(func, args))
 
     async def has_permission_to_run_from_msg(self, origin_msg: Message):
         from .event_util import forward_event_with_results
@@ -148,6 +243,8 @@ class Command:
     # decorator support
     def __call__(self, func) -> 'Command':
         self.func = func
+        if not self.syntax:
+            self.syntax = self._generate_syntax_string()
         return self
 
     def __str__(self):
@@ -165,10 +262,6 @@ class SubCommand(Command):
                  help: str = None, cooldown: int = DEFAULT_COOLDOWN, cooldown_bypass: str = DEFAULT_COOLDOWN_BYPASS, hidden: bool = False):
         super().__init__(name=name, prefix='', func=func, permission=permission, syntax=syntax, help=help,
                          global_command=False, cooldown=cooldown, cooldown_bypass=cooldown_bypass, hidden=hidden, parent=parent)
-
-        # self.parent: Command = parent
-        # self.update_parent_command(parent)
-        # self.parent.sub_cmds[self.name] = self
 
 
 class DummyCommand(Command):
@@ -252,6 +345,7 @@ class ModCommand(Command):
 
     async def execute(self, msg: Message):
         func, args = self._get_cmd_func(msg.parts[1:])
+        args = self._process_command_args_for_func(func, args)
         if 'self' in func.__code__.co_varnames:
             await func(self.mod, msg, *args)
         else:
@@ -334,3 +428,31 @@ def set_command_permission(cmd: str, new_permission: Optional[str]) -> bool:
 
     command.permission = new_permission
     return True
+
+
+@dataclass(frozen=True)
+class CommandChainResult:
+    first: Command
+    last: Command
+    chain: Tuple[Command]
+    original_args: Tuple[str]
+    remaining_args: Tuple[str]
+
+
+def get_command_chain_from_args(args: Sequence[str]) -> Optional[CommandChainResult]:
+    if not args:
+        return None
+
+    cmd = get_command(args[0])
+    if not cmd:
+        return None
+
+    final_cmd, remaining_args = cmd.get_sub_cmd(args[1:])
+
+    return CommandChainResult(
+        first=cmd,
+        last=final_cmd,
+        chain=tuple(final_cmd.parent_chain()),
+        original_args=tuple(args),
+        remaining_args=tuple(remaining_args)
+    )

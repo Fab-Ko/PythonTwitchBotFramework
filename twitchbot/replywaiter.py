@@ -8,7 +8,7 @@ from .message import Message
 __all__ = [
     'reply_wait_queue',
     'ReplyWaitType',
-    'same_author_predicate',
+    'same_author_and_channel_predicate',
     'same_channel_predicate',
     'wait_for_reply',
     'custom_predicate',
@@ -25,7 +25,7 @@ ReplyWaitType = Tuple[Future, Callable[..., Awaitable[bool]]]
 reply_wait_queue: List[ReplyWaitType] = []
 
 
-def same_author_predicate(msg: Message):
+def same_author_and_channel_predicate(msg: Message):
     """
     returns a async predicate where the message from be from the same author and channel as `msg` passed to this function
     """
@@ -64,7 +64,7 @@ def custom_predicate(custom_predicate: Callable[[Message], bool] = None,
             'msg cannot be None if same_author or same_channel is True, add `msg=MSG_HERE` to fix this error')
 
     async def _custom_predicate(m: Message):
-        if (same_channel and m.channel != m.channel) or (same_author and m.author != msg.author):
+        if (same_channel and m.channel != msg.channel) or (same_author and m.author != msg.author):
             return False
 
         if custom_predicate is not None:
@@ -79,7 +79,7 @@ def custom_async_predicate(msg: Message, custom_predicate: Callable[[Message], A
                            same_author=True,
                            same_channel=True):
     async def _custom_async_predicate(m: Message):
-        if (same_channel and m.channel != m.channel) or (same_author and m.author != msg.author):
+        if (same_channel and m.channel != msg.channel) or (same_author and m.author != msg.author):
             return False
 
         if custom_predicate is not None:
@@ -91,7 +91,8 @@ def custom_async_predicate(msg: Message, custom_predicate: Callable[[Message], A
 
 
 class ReplyResult:
-    def __init__(self, data, default=None):
+    def __init__(self, data, default=None, timed_out=False):
+        self.timed_out = timed_out
         self.default_value = default
         self.raw_value = data
         self.has_value = data is not None
@@ -133,15 +134,17 @@ async def wait_for_reply(predicate: TYPE_CALLABLE_PREDICATE = None, timeout=30, 
     """
 
     async def _timeout_defaulter():
+        timed_out = False
         try:
             value = await asyncio.wait_for(future, timeout)
         except TimeoutError:
+            timed_out = True
             if raise_on_timeout:
                 raise
             else:
                 value = default
 
-        return ReplyResult(value, default=default)
+        return ReplyResult(value, default=default, timed_out=timed_out)
 
     # ensures that the predicate is a coroutine (aka awaitable)
     if not inspect.iscoroutinefunction(predicate):

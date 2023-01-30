@@ -108,7 +108,7 @@ async def get_user_followage(channel_name: str, follower: str, headers: dict = N
 
     channel_id = await get_user_id(channel_name, headers)
     follower_id = await get_user_id(follower, headers)
-    _, json = await get_url(USER_FOLLOWAGE_API_URL.format(follower_id, channel_id), headers)
+    _, json = await get_url(USER_FOLLOWAGE_API_URL.format(channel_id, follower_id), headers)
 
     # verify that the api response has data, and its total is not 0
     if not json or not json.get('total', 0) or not json.get('data'):
@@ -137,7 +137,7 @@ async def get_user_data(user: str, headers: dict = None) -> dict:
 
 
 async def get_user_id(user: str, headers: dict = None, verbose=True) -> int:
-    # shortcut if the this user's id was already requested
+    # shortcut if the user's id was already requested
     if user in user_id_cache:
         return user_id_cache[user]
 
