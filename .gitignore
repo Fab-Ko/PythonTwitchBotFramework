@@ -116,3 +116,5 @@ mods
 /commands/
 DEBUG_LOGS/
 /cc.bat
+/gen_token_url.py
+/cloc-1.84.exe
